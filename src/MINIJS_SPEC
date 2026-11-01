@@ -1,0 +1,154 @@
+# MiniJS 1.0 — Student Language Specification
+
+## Objective
+
+Implement an **independent execution engine** for the MiniJS 1.0 language defined here. Your program must read a MiniJS source file, execute it, and write the program's output. You may choose an AST-walking interpreter or a bytecode interpreter. **AI assistance is permitted.** Execution speed will be evaluated on undisclosed MiniJS programs, but **correctness is mandatory**.
+
+This specification is normative. MiniJS is a deliberately restricted JavaScript-like language, **not full ECMAScript**. Implement only the features documented below. Any behavior not explicitly specified is outside the language.
+
+## 1. Invocation and process contract
+
+Your submission must provide a command that can be invoked in this format:
+
+```sh
+YOUR_COMMAND path/to/program.mjs
+```
+
+- Exactly one positional argument: the UTF-8 source file path.
+- On a valid program: execute it, write **only** `print` output to standard output (one value per line), then exit with status `0`.
+- On lexical, syntax, or runtime error: exit with a **nonzero** status and write an informative diagnostic to standard error. Do not print diagnostics to standard output.
+- Parse the entire file before executing it: a syntax error anywhere in the file must prevent **all** execution and `print` output.
+- For correctness tests, all erroneous programs generate the error before any valid `print` statement is executed. (The behavior of already-produced output after a later runtime error is not evaluated.)
+- No interactive prompts, debug logs, or banners on standard output.
+- The checker appends the source file path as the last argument of the launch command, e.g. `python3 correctness_test.py -- node my_engine.js`.
+
+### Independence requirement
+
+Your engine must tokenize/parse/execute the language itself. Do not call a host-language `eval`, `new Function`, a browser/Node JavaScript engine, an existing JavaScript interpreter, or a general-purpose external compiler to perform MiniJS execution. You may use ordinary libraries for file I/O, memory allocation, etc. You may use AI during development, but the submitted code must obey these rules.
+
+The instructor will specify the permitted **implementation language**, toolchain, hardware, memory limit, and performance scoring separately. All competitors should use the same setup.
+
+## 2. Lexical rules
+
+- Source is case sensitive; keywords are `let`, `if`, `else`, `while`, `true`, `false`, and `print`.
+- Identifiers match `[A-Za-z_$][A-Za-z0-9_$]*` and cannot equal a keyword.
+- Number literals match `DIGITS` or `DIGITS.DIGITS`, where `DIGITS` is one or more ASCII decimal digits. Examples: `0`, `21`, `3.14`, `0002`. Nonexamples: `.5`, `5.`, `1e3`.
+- Whitespace (space, tab, CR, LF) separates tokens and is otherwise ignored.
+- Line comments start with `//` and extend to the end of the line. Block comments start with `/*` and end at the first `*/`; block comments do not nest. An unterminated block comment is an error.
+- Operators/punctuation: `+ - * / % ! < <= > >= === !== && || = ; ( ) { }`.
+- Recognize the longest valid operator first (`===` before `=`, `!==` before `!`). `==`, `!=`, `++`, `--`, `+=`, `**`, and other unlisted operators are not supported.
+- Every non-comment character must belong to a valid token; otherwise report a lexical error.
+
+## 3. Grammar
+
+The notation `*` means zero or more repetitions, `?` means optional, and `|` means alternatives.
+
+```ebnf
+program        = statement* EOF ;
+statement      = "let" IDENT "=" expression ";"
+               | IDENT "=" expression ";"
+               | "print" "(" expression ")" ";"
+               | "if" "(" expression ")" block ("else" block)?
+               | "while" "(" expression ")" block
+               | block ;
+block          = "{" statement* "}" ;
+
+expression     = logical_or ;
+logical_or     = logical_and ("||" logical_and)* ;
+logical_and    = equality ("&&" equality)* ;
+equality       = comparison (("===" | "!==") comparison)* ;
+comparison     = addition (("<" | "<=" | ">" | ">=") addition)* ;
+addition       = multiplication (("+" | "-") multiplication)* ;
+multiplication = unary (("*" | "/" | "%") unary)* ;
+unary          = ("!" | "+" | "-") unary | primary ;
+primary        = NUMBER | "true" | "false" | IDENT | "(" expression ")" ;
+```
+
+Operators in the same binary precedence tier associate **left to right**. Unary operators bind more tightly than binary operators and associate right to left. Parentheses override precedence.
+
+All variable declarations require an initializer. Semicolons are mandatory where shown. Braces are mandatory for `if`, `else`, and `while` bodies. There are no function calls, except the specially defined `print(expression);` **statement**.
+
+## 4. Values and arithmetic
+
+MiniJS has exactly two runtime value types:
+
+- **Number:** IEEE 754 binary64 (double precision), with JavaScript-style arithmetic and signed zero, `Infinity`, `-Infinity`, and `NaN` results.
+- **Boolean:** `true` or `false`.
+
+Numeric literals are rounded to binary64 at parse time.
+
+- `+`, `-`, `*`, `/`, `%` (binary) and unary `+`, `-` require Numbers; other operand types are runtime errors.
+- `/` is floating-point division. `1 / 2` produces `0.5`. Division by zero follows IEEE-754/JavaScript number behavior: `1 / 0` is `Infinity`, `-1 / 0` is `-Infinity`, `0 / 0` is `NaN`.
+- `%` is floating-point **remainder**, not mathematical modulo: `-7 % 3` is `-1`; `7 % -3` is `1`. Remainder by zero yields `NaN`.
+- `<`, `<=`, `>`, `>=` require Number operands and produce Boolean results; comparisons involving `NaN` are false.
+- `===` and `!==` compare type and value without coercion. `true === 1` is `false`; `0 === -0` is `true`; `NaN === NaN` is `false`.
+- `!` converts its operand to Boolean using truthiness and negates it.
+- Numeric truthiness: `0`, `-0`, and `NaN` are false; all other Numbers (including infinities) are true. Booleans have their usual truthiness.
+- `&&` and `||` **short-circuit** and return one of their original operand values (not necessarily a Boolean), matching JavaScript: `0 || 7` yields `7`, `3 && 9` yields `9`.
+- Evaluate binary operands left to right, subject to short-circuiting. No implicit conversion between Numbers and Booleans for arithmetic or relational operators.
+
+## 5. Variables and scope
+
+- `let name = expression;` creates a new variable binding in the **current lexical block**. The top-level program is also a lexical scope.
+- A binding may not be declared twice in the same scope: that is a runtime error. Shadowing an outer variable in a nested block is allowed.
+- A new binding exists but is uninitialized while its initializer is evaluated. Reading it before initialization is a runtime error (similar to JavaScript's temporal dead zone).
+- `name = expression;` assigns to the nearest existing binding in the current or an enclosing scope. Assignment to an undeclared name is a runtime error.
+- Reading an undeclared identifier is a runtime error.
+- Each entry into a block creates a new scope, and leaving the block discards that scope. This applies to each iteration of a `while` loop.
+- `if` executes exactly one branch (or none); `while` reevaluates its condition before each iteration; the condition is tested using truthiness.
+- There are no `var`, `const`, hoisting, globals supplied by the host, functions, closures, arrays, strings, objects, `for`, `break`, `continue`, `return`, exceptions, or automatic semicolon insertion.
+
+## 6. Output
+
+`print(expression);` evaluates the expression and emits exactly one line:
+
+- Boolean values: literal `true` or `false` (lowercase).
+- Numbers: a decimal representation that round-trips to the intended binary64 value; `NaN`, `Infinity`, and `-Infinity` use exactly these spellings. Either `0` or `-0` is accepted for negative zero.
+- Whitespace around printed values and extra output lines are not permitted. A final newline after the last value is permitted and recommended.
+
+The public checker compares finite fractional numbers with a small floating-point tolerance to accommodate output formatting, but implementations should preserve binary64 semantics, and integer-valued outputs are checked exactly when representable.
+
+## 7. Illustrative valid programs
+
+**Precedence and printing**
+
+```js
+let a = 5;
+let b = 2;
+print(a + b * 10);  // 25
+print(a / b);       // 2.5
+```
+
+**Scope and loops**
+
+```js
+let sum = 0;
+let i = 1;
+while (i <= 100) {
+    sum = sum + i;
+    i = i + 1;
+}
+print(sum);  // 5050
+{
+    let sum = 7;
+    print(sum); // 7
+}
+print(sum); // 5050
+```
+
+**Short-circuiting**
+
+```js
+print(0 || 42);             // 42
+print(false && unknown);   // false (unknown is never evaluated)
+```
+
+## 8. Correctness, security, and evaluation
+
+- Every submitted engine must pass the provided public checker and an **unseen** conformance suite. Passing the public tests alone does not establish correctness.
+- Hidden benchmark programs will be valid MiniJS programs. Workload source, runtime inputs, and exact sizes are undisclosed until judging is complete.
+- Benchmark-specific hardcoding, precomputed output tables, recognizing test-file names, or execution delegated to existing language engines is prohibited.
+- Performance must never come at the expense of language correctness. Timings are gathered only for correct results, using standardized resource and launch policies supplied by the instructor.
+- Implementation architecture, optimization strategy, and use of AI are otherwise up to the student.
+
+**Required submission:** source code, build/run instructions, and an executable launch command honoring section 1. Do not submit benchmark-specific answers.
